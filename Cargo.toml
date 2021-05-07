@@ -1,0 +1,12 @@
+[package]
+name = "shiromana-cli"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+shiromana-rs = { path = "../shiromana-rs" }
+clap = "2.33.3"
+termcolor = "1.1.2"
+confy = "0.4.0"
