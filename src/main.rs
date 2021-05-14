@@ -1,4 +1,8 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
+
+#[macro_use]
+extern crate lazy_static;
+
 use std::path::{Path, PathBuf};
 
 use confy;
@@ -13,6 +17,7 @@ use command::*;
 use library::*;
 use prompter::*;
 use std::error::Error;
+use std::str::FromStr;
 
 mod add_image;
 mod command;
@@ -121,6 +126,7 @@ fn load_config(config_path: Option<PathBuf>) -> Result<(AppConfig, Library), Box
 }
 
 use clap::Clap;
+use shiromana_rs::media::{Media, MediaType};
 
 #[derive(Clap)]
 #[clap(version = "0.1.0", author = "Shiroko <hhx.xxm@gmail.com>")]
@@ -153,17 +159,19 @@ pub struct Add {
     comment: Option<String>,
     #[clap(short, long)]
     title: Option<String>,
+    #[clap(long, validator(is_valid_media_type))]
+    _type: Option<MediaType>,
     #[clap(validator(is_existed_as_file))]
-    file: PathBuf,
+    file: Vec<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let opts: Opts = Opts::parse();
     let config_path = opts.config.map(|v| PathBuf::from(v));
-    let (cfg, lib) = load_config(config_path)?;
+    let (cfg, mut lib) = load_config(config_path)?;
     match opts.subcmd {
         SubCommand::Info(opt) => do_info(opt, cfg, lib),
-        SubCommand::Add(opt) => do_add(opt, cfg, lib),
+        SubCommand::Add(opt) => do_add(opt, cfg, &mut lib),
     }
 }
 
@@ -177,5 +185,19 @@ fn is_existed_as_file(v: &str) -> Result<(), String> {
         } else {
             Err("Not Exists".to_string())
         }
+    }
+}
+
+fn is_valid_media_type(v: &str) -> Result<(), String> {
+    let k = MediaType::from_str(v.trim()).map_err(|_| "Unsupported Media Type.".to_string())?;
+    match k {
+        MediaType::Other => {
+            if v.trim().to_ascii_lowercase() != "other" {
+                Err("Not a valid Media Type.".to_string())
+            } else {
+                Ok(())
+            }
+        }
+        _ => Ok(()),
     }
 }

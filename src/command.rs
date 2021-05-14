@@ -1,104 +1,113 @@
 use crate::{Add, AppConfig, Info};
-use console::{style, Style};
+use console::{style, Style, StyledObject};
+use mime;
 use shiromana_rs::library::{Library, LibrarySummary};
 use shiromana_rs::media::{Media, MediaDetail, MediaType};
 use shiromana_rs::misc::{HashAlgo, Uuid};
 use std::boxed::Box;
 use std::convert::TryInto;
 use std::error::Error;
+use std::path::PathBuf;
 use std::str::FromStr;
+use tree_magic;
+
+lazy_static! {
+    static ref DECO_LEFT_PAR_M: StyledObject<&'static str> = style("[").black().bright();
+    static ref DECO_RIGHT_PAR_M: StyledObject<&'static str> = style("]").black().bright();
+    static ref DECO_BRANCH: StyledObject<&'static str> = style("|-").black().bright();
+    static ref STYLE_FIELD_NAME: Style = Style::new().yellow();
+    static ref STYLE_FIELD_VALUE: Style = Style::new().blue().bright();
+    static ref STYLE_ERROR: Style = Style::new().red().bright();
+}
 
 fn print_media(media: &Media, detailed: bool) {
     if detailed {
-        let field_name_style = Style::new().yellow();
-        let field_value_style = Style::new().blue().bright();
-        let field_decorator_style = Style::new().black().bright();
         println!(
             "{}: {}",
-            field_name_style.apply_to("Media ID"),
-            field_value_style.apply_to(&media.id)
+            STYLE_FIELD_NAME.apply_to("Media ID"),
+            STYLE_FIELD_VALUE.apply_to(&media.id)
         );
         println!(
             "{}: {}",
-            field_name_style.apply_to("Library UUID"),
-            field_value_style.apply_to(&media.library_uuid)
+            STYLE_FIELD_NAME.apply_to("Library UUID"),
+            STYLE_FIELD_VALUE.apply_to(&media.library_uuid)
         );
         println!(
             "{}: {}",
-            field_name_style.apply_to("Hash"),
-            field_value_style.apply_to(&media.hash)
+            STYLE_FIELD_NAME.apply_to("Hash"),
+            STYLE_FIELD_VALUE.apply_to(&media.hash)
         );
         println!(
             "{}: {}",
-            field_name_style.apply_to("File Name"),
-            field_value_style.apply_to(&media.filename)
+            STYLE_FIELD_NAME.apply_to("File Name"),
+            STYLE_FIELD_VALUE.apply_to(&media.filename)
         );
         println!(
             "{}: {}",
-            field_name_style.apply_to("File Path"),
-            field_value_style.apply_to(&media.filepath)
+            STYLE_FIELD_NAME.apply_to("File Path"),
+            STYLE_FIELD_VALUE.apply_to(&media.filepath)
         );
         println!(
             "{}: {}",
-            field_name_style.apply_to("File Size"),
-            field_value_style.apply_to(format!("{:2} KB", &media.filesize / 1024))
+            STYLE_FIELD_NAME.apply_to("File Size"),
+            STYLE_FIELD_VALUE.apply_to(format!("{:2} KB", &media.filesize / 1024))
         );
         println!(
             "{}: {}",
-            field_name_style.apply_to("Media Type"),
-            field_value_style.apply_to(&media.kind.to_string())
+            STYLE_FIELD_NAME.apply_to("Media Type"),
+            STYLE_FIELD_VALUE.apply_to(&media.kind.to_string())
         );
         println!(
             "{}: {}",
-            field_name_style.apply_to("Add Time"),
-            field_value_style.apply_to(&media.time_add.to_string())
+            STYLE_FIELD_NAME.apply_to("Add Time"),
+            STYLE_FIELD_VALUE.apply_to(&media.time_add.to_string())
         );
         if let Some(v) = &media.caption {
             println!(
                 "{}: {}",
-                field_name_style.apply_to("Caption"),
-                field_value_style.apply_to(v)
+                STYLE_FIELD_NAME.apply_to("Caption"),
+                STYLE_FIELD_VALUE.apply_to(v)
             );
         }
         if let Some(v) = &media.sub_kind {
             println!(
                 "{}: {}",
-                field_name_style.apply_to("Sub Type"),
-                field_value_style.apply_to(v)
+                STYLE_FIELD_NAME.apply_to("Sub Type"),
+                STYLE_FIELD_VALUE.apply_to(v)
             );
         }
         if let Some(v) = &media.kind_addition {
             println!(
                 "{}: {}",
-                field_name_style.apply_to("Type Addition"),
-                field_value_style.apply_to(v)
+                STYLE_FIELD_NAME.apply_to("Type Addition"),
+                STYLE_FIELD_VALUE.apply_to(v)
             );
         }
         if let Some(v) = &media.series_uuid {
             println!(
                 "{}: {}",
-                field_name_style.apply_to("Series UUID"),
-                field_value_style.apply_to(v)
+                STYLE_FIELD_NAME.apply_to("Series UUID"),
+                STYLE_FIELD_VALUE.apply_to(v)
             );
         }
         if let Some(v) = &media.series_no {
             println!(
                 "{}: #{}",
-                field_name_style.apply_to("Series No"),
-                field_value_style.apply_to(v)
+                STYLE_FIELD_NAME.apply_to("Series No"),
+                STYLE_FIELD_VALUE.apply_to(v)
             );
         }
         if let Some(v) = &media.comment {
             println!(
                 "{}: {}",
-                field_name_style.apply_to("Comment"),
-                field_value_style.apply_to(v)
+                STYLE_FIELD_NAME.apply_to("Comment"),
+                STYLE_FIELD_VALUE.apply_to(v)
             );
         }
         if let Some(v) = &media.detail {
             println!(
                 "{}:\n{}",
-                field_name_style.apply_to("Details"),
+                STYLE_FIELD_NAME.apply_to("Details"),
                 format!("{}", v)
                     .split("\n")
                     .map(|v| "    ".to_string() + v)
@@ -125,57 +134,54 @@ fn print_media(media: &Media, detailed: bool) {
 }
 
 pub fn do_info(opt: Info, _cfg: AppConfig, lib: Library) -> Result<(), Box<dyn Error>> {
-    let field_name_style = Style::new().yellow();
-    let field_value_style = Style::new().blue().bright();
-    let field_decorator_style = Style::new().black().bright();
     let print_library_info = || {
         println!(
             "{}: {}",
-            field_name_style.apply_to("Library name"),
-            field_value_style.apply_to(lib.get_library_name())
+            STYLE_FIELD_NAME.apply_to("Library name"),
+            STYLE_FIELD_VALUE.apply_to(lib.get_library_name())
         );
         match lib.get_master_name() {
             Some(v) => println!(
                 "{}: {}",
-                field_name_style.apply_to("Master name"),
-                field_value_style.apply_to(v)
+                STYLE_FIELD_NAME.apply_to("Master name"),
+                STYLE_FIELD_VALUE.apply_to(v)
             ),
             None => (),
         };
         println!(
             "{}: {}",
-            field_name_style.apply_to("UUID"),
-            field_value_style.apply_to(lib.uuid.to_string())
+            STYLE_FIELD_NAME.apply_to("UUID"),
+            STYLE_FIELD_VALUE.apply_to(lib.uuid.to_string())
         );
         println!(
             "{}: {}",
-            field_name_style.apply_to("Path"),
-            field_value_style.apply_to(lib.get_path())
+            STYLE_FIELD_NAME.apply_to("Path"),
+            STYLE_FIELD_VALUE.apply_to(lib.get_path())
         );
         println!(
             "{}: {}",
-            field_name_style.apply_to("Schema"),
-            field_value_style.apply_to(lib.get_schema())
+            STYLE_FIELD_NAME.apply_to("Schema"),
+            STYLE_FIELD_VALUE.apply_to(lib.get_schema())
         );
         let summary = lib.get_summary();
-        println!("{}", field_name_style.apply_to("Library Summary"));
+        println!("{}", STYLE_FIELD_NAME.apply_to("Library Summary"));
         println!(
             "    {} {}: {}",
-            field_decorator_style.apply_to("|-"),
-            field_name_style.apply_to("Media count"),
-            field_value_style.apply_to(format!("{}", summary.media_count))
+            *DECO_BRANCH,
+            STYLE_FIELD_NAME.apply_to("Media count"),
+            STYLE_FIELD_VALUE.apply_to(format!("{}", summary.media_count))
         );
         println!(
             "    {} {}: {}",
-            field_decorator_style.apply_to("|-"),
-            field_name_style.apply_to("Series count"),
-            field_value_style.apply_to(format!("{}", summary.series_count))
+            *DECO_BRANCH,
+            STYLE_FIELD_NAME.apply_to("Series count"),
+            STYLE_FIELD_VALUE.apply_to(format!("{}", summary.series_count))
         );
         println!(
             "    {} {}: {}",
-            field_decorator_style.apply_to("|-"),
-            field_name_style.apply_to("Media size"),
-            field_value_style.apply_to(format!("{} KB", summary.media_size)),
+            *DECO_BRANCH,
+            STYLE_FIELD_NAME.apply_to("Media size"),
+            STYLE_FIELD_VALUE.apply_to(format!("{} KB", summary.media_size)),
         );
     };
     let get_media = |query_string: String| {
@@ -214,12 +220,10 @@ pub fn do_info(opt: Info, _cfg: AppConfig, lib: Library) -> Result<(), Box<dyn E
         Some(v) => {
             let (media, query_string) = get_media(v);
             if media.is_empty() {
-                let info_style = Style::new().red().bright();
-                let info_value = Style::new().yellow();
                 println!(
                     "{} {}",
-                    info_style.apply_to("Cannot acquire any media via: "),
-                    info_value.apply_to(query_string)
+                    STYLE_ERROR.apply_to("Cannot acquire any media via: "),
+                    STYLE_FIELD_VALUE.apply_to(query_string)
                 )
             } else {
                 for media in media.iter() {
@@ -232,6 +236,72 @@ pub fn do_info(opt: Info, _cfg: AppConfig, lib: Library) -> Result<(), Box<dyn E
     Ok(())
 }
 
-pub fn do_add(opt: Add, _cfg: AppConfig, lib: Library) -> Result<(), Box<dyn Error>> {
+fn add_one_media(
+    lib: &mut Library,
+    file: PathBuf,
+    kind: Option<MediaType>,
+    title: Option<String>,
+    comment: Option<String>,
+) -> Result<u64, Box<dyn Error>> {
+    let kind = kind.clone().unwrap_or_else(|| {
+        let mime_str = tree_magic::from_filepath(file.as_path());
+        let mime_str = mime_str.split("/").collect::<Vec<&str>>();
+        let mime_str = mime_str.first().unwrap();
+        match *mime_str {
+            "image" => MediaType::Image,
+            "audio" => MediaType::Audio,
+            "video" => MediaType::Video,
+            "text" => MediaType::Text,
+            _ => MediaType::Other,
+        }
+    });
+    let id = lib.add_media(
+        file.to_str().unwrap().to_string(),
+        kind.clone(),
+        None,
+        None,
+        title,
+        comment,
+    )?;
+    println!(
+        "{}: {} {}{}{} {}{}{}",
+        STYLE_FIELD_NAME.apply_to("Successfully Added Media"),
+        STYLE_FIELD_VALUE.apply_to(
+            file.file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default()
+        ),
+        *DECO_LEFT_PAR_M,
+        STYLE_FIELD_VALUE.apply_to(id),
+        *DECO_RIGHT_PAR_M,
+        *DECO_LEFT_PAR_M,
+        STYLE_FIELD_VALUE.apply_to(kind.to_string()),
+        *DECO_RIGHT_PAR_M,
+    );
+    Ok(id)
+}
+
+pub fn do_add(opt: Add, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dyn Error>> {
+    if opt.file.len() == 1 {
+        add_one_media(
+            lib,
+            opt.file.first().unwrap().clone(),
+            opt._type.clone(),
+            opt.title.clone(),
+            opt.comment.clone(),
+        );
+    } else {
+        for f in opt.file {
+            match add_one_media(lib, f, opt._type.clone(), None, None) {
+                Err(e) => println!(
+                    "{}: {}",
+                    STYLE_ERROR.apply_to("Error when trying add media: "),
+                    STYLE_FIELD_VALUE.apply_to(e.to_string())
+                ),
+                Ok(id) => (),
+            }
+        }
+    }
     Ok(())
 }
