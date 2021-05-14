@@ -3,10 +3,21 @@ name = "shiromana-cli"
 version = "0.1.0"
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+purge-every-time = [] # Remove configuration file and library file every time.
 
 [dependencies]
 shiromana-rs = { path = "../shiromana-rs" }
-clap = "2.33.3"
-termcolor = "1.1.2"
-confy = "0.4.0"
+dialoguer = "0.8.0"
+indicatif = "0.16.0"
+console = "0.14.1"
+confy = { git = "https://github.com/Oyami-Srk/confy" }
+#confy = { path = "crates/confy" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+directories-next = "2.0.0"
+
+[dependencies.clap]
+version = "3.0.0-beta.2"
+default-features = true
+features = [ "suggestions", "color", "derive"]
