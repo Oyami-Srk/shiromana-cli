@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2018"
 
 [features]
-default = ["purge-every-time"]
+default = []
 purge-every-time = [] # Remove configuration file and library file every time.
+auto-create = ["purge-every-time"] # Automaticaly create configuration file and library every time.
 
 [dependencies]
 shiromana-rs = { path = "../shiromana-rs" }
@@ -20,6 +21,8 @@ directories-next = "2.0.0"
 mime = "0.3.16"
 tree_magic = "0.2.3"
 lazy_static = "1.4.0"
+url = "2.2.2"
+humansize = "1.1.1"
 
 [dependencies.clap]
 version = "3.0.0-beta.2"

@@ -1,15 +1,18 @@
-use crate::{Add, AppConfig, Info};
+use crate::{Add, AppConfig, Create, Info};
 use console::{style, Style, StyledObject};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Validator};
+use humansize::{file_size_opts, FileSize};
 use mime;
 use shiromana_rs::library::{Library, LibrarySummary};
 use shiromana_rs::media::{Media, MediaDetail, MediaType};
-use shiromana_rs::misc::{HashAlgo, Uuid};
+use shiromana_rs::misc::{Error as LibError, HashAlgo, Uuid};
 use std::boxed::Box;
 use std::convert::TryInto;
 use std::error::Error;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tree_magic;
+use url::{Host, ParseError, Position, Url};
 
 lazy_static! {
     static ref DECO_LEFT_PAR_M: StyledObject<&'static str> = style("[").black().bright();
@@ -83,18 +86,18 @@ fn print_media(media: &Media, detailed: bool) {
                 STYLE_FIELD_VALUE.apply_to(v)
             );
         }
-        if let Some(v) = &media.series_uuid {
+        if media.series_uuid.len() != 0 {
             println!(
-                "{}: {}",
+                "{}:\n{}",
                 STYLE_FIELD_NAME.apply_to("Series UUID"),
-                STYLE_FIELD_VALUE.apply_to(v)
-            );
-        }
-        if let Some(v) = &media.series_no {
-            println!(
-                "{}: #{}",
-                STYLE_FIELD_NAME.apply_to("Series No"),
-                STYLE_FIELD_VALUE.apply_to(v)
+                STYLE_FIELD_VALUE.apply_to(
+                    &media
+                        .series_uuid
+                        .iter()
+                        .map(|u| { "    ".to_string() + &u.to_string() })
+                        .collect::<Vec<String>>()
+                        .join("\n")
+                )
             );
         }
         if let Some(v) = &media.comment {
@@ -181,7 +184,13 @@ pub fn do_info(opt: Info, _cfg: AppConfig, lib: Library) -> Result<(), Box<dyn E
             "    {} {}: {}",
             *DECO_BRANCH,
             STYLE_FIELD_NAME.apply_to("Media size"),
-            STYLE_FIELD_VALUE.apply_to(format!("{} KB", summary.media_size)),
+            STYLE_FIELD_VALUE.apply_to(format!(
+                "{}",
+                summary
+                    .media_size
+                    .file_size(file_size_opts::CONVENTIONAL)
+                    .unwrap()
+            )),
         );
     };
     let get_media = |query_string: String| {
@@ -242,7 +251,7 @@ fn add_one_media(
     kind: Option<MediaType>,
     title: Option<String>,
     comment: Option<String>,
-) -> Result<u64, Box<dyn Error>> {
+) -> Result<u64, LibError> {
     let kind = kind.clone().unwrap_or_else(|| {
         let mime_str = tree_magic::from_filepath(file.as_path());
         let mime_str = mime_str.split("/").collect::<Vec<&str>>();
@@ -282,26 +291,159 @@ fn add_one_media(
     Ok(id)
 }
 
-pub fn do_add(opt: Add, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dyn Error>> {
-    if opt.file.len() == 1 {
-        add_one_media(
-            lib,
-            opt.file.first().unwrap().clone(),
-            opt._type.clone(),
-            opt.title.clone(),
-            opt.comment.clone(),
-        );
-    } else {
-        for f in opt.file {
-            match add_one_media(lib, f, opt._type.clone(), None, None) {
-                Err(e) => println!(
-                    "{}: {}",
-                    STYLE_ERROR.apply_to("Error when trying add media: "),
-                    STYLE_FIELD_VALUE.apply_to(e.to_string())
-                ),
-                Ok(id) => (),
-            }
+fn parse_input_file(input: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let lines = std::fs::read_to_string(input)?;
+    let lines = lines.lines();
+    let lines = lines.map(|v| {
+        if &v[0..7] == "file://" {
+            Url::parse(v).unwrap().path().to_string()
+        } else {
+            v.to_string()
         }
+    });
+    let not_exists: Vec<String> = lines
+        .clone()
+        .filter(|v| !PathBuf::from(v).is_file())
+        .collect();
+    if !not_exists.is_empty() {
+        Err({ not_exists.join(",") + " are not existed or not a file." }.into())
+    } else {
+        Ok(lines.map(|v| PathBuf::from(v)).collect())
+    }
+}
+
+pub fn do_add(opt: Add, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dyn Error>> {
+    let files = if let Some(input) = &opt.input {
+        parse_input_file(&input)?
+    } else {
+        opt.file.clone()
+    };
+    let (title, comment) = if files.len() == 1 {
+        (opt.title.clone(), opt.comment.clone())
+    } else {
+        (None, None)
+    };
+
+    let ids: Vec<Option<u64>> = files
+        .iter()
+        .map(|f| {
+            match add_one_media(
+                lib,
+                f.clone(),
+                opt._type.clone(),
+                title.clone(),
+                comment.clone(),
+            ) {
+                Err(e) => {
+                    if let LibError::AlreadyExists(s) = e {
+                        let id = lib
+                            .query_media(&format!("hash = '{}'", s))
+                            .unwrap_or_else(|v| {
+                                println!(
+                                    "{}: {}, {}: {}",
+                                    STYLE_ERROR
+                                        .apply_to("Error at querying media via Hash should exists"),
+                                    STYLE_FIELD_VALUE.apply_to(s),
+                                    STYLE_ERROR.apply_to("Due to"),
+                                    STYLE_FIELD_VALUE.apply_to(v.to_string())
+                                );
+                                vec![]
+                            })
+                            .first()
+                            .map(|v| *v);
+                        if let Some(id) = id {
+                            let m = lib.get_media(id).unwrap();
+                            println!(
+                                "{}: {} {}{}{} {}{}{}",
+                                STYLE_FIELD_NAME.apply_to("Existed Media Found"),
+                                STYLE_FIELD_VALUE.apply_to(m.filename),
+                                *DECO_LEFT_PAR_M,
+                                STYLE_FIELD_VALUE.apply_to(id),
+                                *DECO_RIGHT_PAR_M,
+                                *DECO_LEFT_PAR_M,
+                                STYLE_FIELD_VALUE.apply_to(m.kind.to_string()),
+                                *DECO_RIGHT_PAR_M,
+                            );
+                        }
+                        id
+                    } else {
+                        println!(
+                            "{}: {}",
+                            STYLE_ERROR.apply_to("Error when trying add media"),
+                            STYLE_FIELD_VALUE.apply_to(e.to_string())
+                        );
+                        None
+                    }
+                }
+                Ok(id) => Some(id),
+            }
+        })
+        .collect();
+    if opt.sorted && ids.iter().any(|v| v.is_none()) {
+        println!("{}", STYLE_FIELD_VALUE.apply_to("There is some media cannot be added while trying to add it to sorted series. This may break the sort."));
+        return Ok(());
+    }
+
+    let series = if let Some(uuid) = opt.series {
+        Some(uuid)
+    } else if let Some(name) = opt.new_series {
+        Some(lib.create_series(
+            if lib.get_series_by_name(name.clone()).is_ok() {
+                let theme = ColorfulTheme {
+                    values_style: Style::new().yellow().dim(),
+                    ..ColorfulTheme::default()
+                };
+                let r = Input::with_theme(&theme)
+                    .with_prompt("Series name")
+                    .validate_with(|input: &String| -> Result<(), &str> {
+                        if lib.get_series_by_name(input.clone()).is_ok() {
+                            Err("This is name is existed. Choose another one please.")
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .interact_text()?;
+                r
+            } else {
+                name
+            },
+            None,
+        )?)
+    } else {
+        None
+    };
+
+    if let Some(uuid) = series {
+        let mut ids = ids;
+        ids.retain(|c| c.is_some());
+        dbg!(ids.clone());
+        for (i, id) in ids.iter().enumerate() {
+            lib.add_to_series(id.unwrap(), &uuid, None, !opt.sorted)?;
+        }
+        println!(
+            "Successfully Added {} Medias to Series {}.",
+            ids.len(),
+            uuid
+        );
+    }
+    Ok(())
+}
+
+pub fn do_create(opt: Create, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dyn Error>> {
+    let uuid = lib.create_series(opt.title.clone(), opt.comment)?;
+    if opt.uuid_only {
+        println!("{}", uuid);
+    } else {
+        println!(
+            "{}: {}{}{} {}{}{}",
+            STYLE_FIELD_NAME.apply_to("Successfully created series"),
+            *DECO_LEFT_PAR_M,
+            STYLE_FIELD_NAME.apply_to(opt.title),
+            *DECO_RIGHT_PAR_M,
+            *DECO_LEFT_PAR_M,
+            STYLE_FIELD_NAME.apply_to(uuid),
+            *DECO_RIGHT_PAR_M,
+        );
     }
     Ok(())
 }

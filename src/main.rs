@@ -47,6 +47,43 @@ impl ::std::default::Default for AppConfig {
     }
 }
 
+#[cfg(debug_assertions)]
+fn purge_library(config: &AppConfig) {
+    std::fs::remove_dir_all(
+        config.library_path.clone() + "/" + config.library_name.as_str() + ".mlib",
+    )
+    .unwrap_or(());
+}
+
+#[cfg(debug_assertions)]
+fn purge(config_path: &PathBuf) {
+    println!(
+        "{}",
+        style("Debug environment will remove configuration file and default Library every time.")
+            .blue()
+    );
+    std::fs::remove_dir_all(config_path.clone().parent().unwrap()).unwrap_or(());
+    purge_library(&AppConfig::default());
+}
+
+#[cfg(debug_assertions)]
+fn recreate(config: &AppConfig) {
+    println!(
+        "{}",
+        style("Creating configuration file and default library.").blue()
+    );
+    confy::store("shiromana-cli", "config", &config).unwrap();
+    let library = match create_library(&config) {
+        Ok(v) => v,
+        Err(e) => panic!(
+            "Error when creating Library {} at {} due to {}.",
+            config.library_name.clone() + ".mlib",
+            config.library_path,
+            e
+        ),
+    };
+}
+
 fn load_config(config_path: Option<PathBuf>) -> Result<(AppConfig, Library), Box<dyn Error>> {
     let config_path = config_path.unwrap_or(
         match confy::get_configuration_file_path("shiromana-cli", "config") {
@@ -58,20 +95,9 @@ fn load_config(config_path: Option<PathBuf>) -> Result<(AppConfig, Library), Box
     );
 
     #[cfg(feature = "purge-every-time")]
-    #[cfg(debug_assertions)]
-    {
-        println!(
-            "{}",
-            style(
-                "Debug environment will remove configuration file and default Library every time."
-            )
-            .blue()
-        );
-        std::fs::remove_dir_all(config_path.clone().parent().unwrap()).unwrap_or(());
-        let default = AppConfig::default();
-        std::fs::remove_dir_all(default.library_path + "/" + &default.library_name + ".mlib")
-            .unwrap_or(());
-    }
+    purge(&config_path);
+    #[cfg(feature = "auto-create")]
+    recreate(&AppConfig::default());
 
     let (config, library) = if config_path.exists() {
         let config = match confy::load("shiromana-cli", "config") {
@@ -125,13 +151,14 @@ fn load_config(config_path: Option<PathBuf>) -> Result<(AppConfig, Library), Box
     Ok((config, library))
 }
 
-use clap::Clap;
+use clap::{App, ArgGroup, Clap, ValueHint};
 use shiromana_rs::media::{Media, MediaType};
+use shiromana_rs::misc::Uuid;
 
 #[derive(Clap)]
 #[clap(version = "0.1.0", author = "Shiroko <hhx.xxm@gmail.com>")]
 struct Opts {
-    #[clap(short, long, validator(is_existed_as_file))]
+    #[clap(short, long, value_hint = ValueHint::FilePath)]
     config: Option<String>,
     #[clap(subcommand)]
     subcmd: SubCommand,
@@ -142,6 +169,8 @@ enum SubCommand {
     #[clap()]
     Info(Info),
     Add(Add),
+    Create(Create),
+    Clean,
 }
 
 #[derive(Clap)]
@@ -151,7 +180,8 @@ pub struct Info {
     detail: bool,
 }
 
-#[derive(Clap)]
+#[derive(Clap, Debug)]
+#[clap(group = ArgGroup::new("input").required(true), group = ArgGroup::new("series_g").required(false))]
 pub struct Add {
     #[clap(short, long)]
     _move: bool,
@@ -159,10 +189,27 @@ pub struct Add {
     comment: Option<String>,
     #[clap(short, long)]
     title: Option<String>,
-    #[clap(long, validator(is_valid_media_type))]
+    #[clap(short = 'k', long, validator(is_valid_media_type))]
     _type: Option<MediaType>,
-    #[clap(validator(is_existed_as_file))]
+    #[clap(name = "FILE", parse(from_os_str), value_hint = ValueHint::FilePath, validator(is_existed_as_file), group = "input")]
     file: Vec<PathBuf>,
+    #[clap(short, long, name = "INPUT", parse(from_os_str), value_hint = ValueHint::FilePath, validator(is_existed_as_file), group = "input")]
+    input: Option<PathBuf>,
+    #[clap(short, long, group = "series_g")]
+    series: Option<Uuid>,
+    #[clap(short, long, group = "series_g", name = "series name")]
+    new_series: Option<String>,
+    #[clap(long)]
+    sorted: bool,
+}
+
+#[derive(Clap)]
+pub struct Create {
+    title: String,
+    #[clap(short, long)]
+    comment: Option<String>,
+    #[clap(short, long)]
+    uuid_only: bool,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -172,6 +219,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     match opts.subcmd {
         SubCommand::Info(opt) => do_info(opt, cfg, lib),
         SubCommand::Add(opt) => do_add(opt, cfg, &mut lib),
+        SubCommand::Create(opt) => do_create(opt, cfg, &mut lib),
+        SubCommand::Clean => {
+            #[cfg(debug_assertions)]
+            {
+                drop(lib);
+                purge_library(&cfg);
+                recreate(&cfg);
+            }
+            Ok(())
+        }
     }
 }
 
