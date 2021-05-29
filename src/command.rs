@@ -3,7 +3,7 @@ use console::{style, Style, StyledObject};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Validator};
 use humansize::{file_size_opts, FileSize};
 use mime;
-use shiromana_rs::library::{Library, LibrarySummary};
+use shiromana_rs::library::{Library, LibrarySummary, MediaSetType};
 use shiromana_rs::media::{Media, MediaDetail, MediaType};
 use shiromana_rs::misc::{Error as LibError, HashAlgo, Uuid};
 use std::boxed::Box;
@@ -86,13 +86,27 @@ fn print_media(media: &Media, detailed: bool) {
                 STYLE_FIELD_VALUE.apply_to(v)
             );
         }
-        if media.series_uuid.len() != 0 {
+        if media.series.len() != 0 {
             println!(
                 "{}:\n{}",
                 STYLE_FIELD_NAME.apply_to("Series UUID"),
                 STYLE_FIELD_VALUE.apply_to(
                     &media
-                        .series_uuid
+                        .series
+                        .iter()
+                        .map(|u| { "    ".to_string() + &u.to_string() })
+                        .collect::<Vec<String>>()
+                        .join("\n")
+                )
+            );
+        }
+        if media.tag.len() != 0 {
+            println!(
+                "{}:\n{}",
+                STYLE_FIELD_NAME.apply_to("Tags UUID"),
+                STYLE_FIELD_VALUE.apply_to(
+                    &media
+                        .tag
                         .iter()
                         .map(|u| { "    ".to_string() + &u.to_string() })
                         .collect::<Vec<String>>()
@@ -179,6 +193,12 @@ pub fn do_info(opt: Info, _cfg: AppConfig, lib: Library) -> Result<(), Box<dyn E
             *DECO_BRANCH,
             STYLE_FIELD_NAME.apply_to("Series count"),
             STYLE_FIELD_VALUE.apply_to(format!("{}", summary.series_count))
+        );
+        println!(
+            "    {} {}: {}",
+            *DECO_BRANCH,
+            STYLE_FIELD_NAME.apply_to("Tags count"),
+            STYLE_FIELD_VALUE.apply_to(format!("{}", summary.tags_count))
         );
         println!(
             "    {} {}: {}",
@@ -313,6 +333,14 @@ fn parse_input_file(input: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn Error>> {
 }
 
 pub fn do_add(opt: Add, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dyn Error>> {
+    let try_remove = |f: &PathBuf| match std::fs::remove_file(f) {
+        Err(e) => println!(
+            "{}: {}",
+            STYLE_ERROR.apply_to("Error when trying remove origin file"),
+            STYLE_FIELD_VALUE.apply_to(e.to_string())
+        ),
+        Ok(_) => (),
+    };
     let files = if let Some(input) = &opt.input {
         parse_input_file(&input)?
     } else {
@@ -322,6 +350,48 @@ pub fn do_add(opt: Add, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dy
         (opt.title.clone(), opt.comment.clone())
     } else {
         (None, None)
+    };
+
+    let series = if let Some(uuid) = opt.series {
+        Some(uuid)
+    } else if let Some(ref name) = opt.new_series {
+        Some(
+            lib.create_set(
+                MediaSetType::Series,
+                if lib
+                    .get_set_by_name(name.clone())
+                    .unwrap_or((None, None))
+                    .0
+                    .is_some()
+                {
+                    let theme = ColorfulTheme {
+                        values_style: Style::new().yellow().dim(),
+                        ..ColorfulTheme::default()
+                    };
+                    let r = Input::with_theme(&theme)
+                        .with_prompt("Series name")
+                        .validate_with(|input: &String| -> Result<(), &str> {
+                            if lib
+                                .get_set_by_name(input.clone())
+                                .unwrap_or((None, None))
+                                .0
+                                .is_some()
+                            {
+                                Err("This is name is existed. Choose another one please.")
+                            } else {
+                                Ok(())
+                            }
+                        })
+                        .interact_text()?;
+                    r
+                } else {
+                    name.clone()
+                },
+                None,
+            )?,
+        )
+    } else {
+        None
     };
 
     let ids: Vec<Option<u64>> = files
@@ -365,6 +435,9 @@ pub fn do_add(opt: Add, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dy
                                 *DECO_RIGHT_PAR_M,
                             );
                         }
+                        if opt._move {
+                            try_remove(f);
+                        }
                         id
                     } else {
                         println!(
@@ -375,7 +448,12 @@ pub fn do_add(opt: Add, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dy
                         None
                     }
                 }
-                Ok(id) => Some(id),
+                Ok(id) => {
+                    if opt._move {
+                        try_remove(f);
+                    }
+                    Some(id)
+                }
             }
         })
         .collect();
@@ -384,41 +462,12 @@ pub fn do_add(opt: Add, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dy
         return Ok(());
     }
 
-    let series = if let Some(uuid) = opt.series {
-        Some(uuid)
-    } else if let Some(name) = opt.new_series {
-        Some(lib.create_series(
-            if lib.get_series_by_name(name.clone()).is_ok() {
-                let theme = ColorfulTheme {
-                    values_style: Style::new().yellow().dim(),
-                    ..ColorfulTheme::default()
-                };
-                let r = Input::with_theme(&theme)
-                    .with_prompt("Series name")
-                    .validate_with(|input: &String| -> Result<(), &str> {
-                        if lib.get_series_by_name(input.clone()).is_ok() {
-                            Err("This is name is existed. Choose another one please.")
-                        } else {
-                            Ok(())
-                        }
-                    })
-                    .interact_text()?;
-                r
-            } else {
-                name
-            },
-            None,
-        )?)
-    } else {
-        None
-    };
-
     if let Some(uuid) = series {
         let mut ids = ids;
         ids.retain(|c| c.is_some());
         dbg!(ids.clone());
-        for (i, id) in ids.iter().enumerate() {
-            lib.add_to_series(id.unwrap(), &uuid, None, !opt.sorted)?;
+        for (_i, id) in ids.iter().enumerate() {
+            lib.add_to_set(MediaSetType::Series, id.unwrap(), &uuid, None, !opt.sorted)?;
         }
         println!(
             "Successfully Added {} Medias to Series {}.",
@@ -430,7 +479,7 @@ pub fn do_add(opt: Add, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dy
 }
 
 pub fn do_create(opt: Create, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dyn Error>> {
-    let uuid = lib.create_series(opt.title.clone(), opt.comment)?;
+    let uuid = lib.create_set(MediaSetType::Series, opt.title.clone(), opt.comment)?;
     if opt.uuid_only {
         println!("{}", uuid);
     } else {

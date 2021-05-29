@@ -14,10 +14,12 @@ use shiromana_rs::library::{Library, LibrarySummary};
 
 use add_image::*;
 use command::*;
+use ctrlc;
 use library::*;
 use prompter::*;
 use std::error::Error;
 use std::str::FromStr;
+use std::sync::mpsc::channel;
 
 mod add_image;
 mod command;
@@ -73,7 +75,7 @@ fn recreate(config: &AppConfig) {
         style("Creating configuration file and default library.").blue()
     );
     confy::store("shiromana-cli", "config", &config).unwrap();
-    let library = match create_library(&config) {
+    let _library = match create_library(&config) {
         Ok(v) => v,
         Err(e) => panic!(
             "Error when creating Library {} at {} due to {}.",
@@ -100,7 +102,7 @@ fn load_config(config_path: Option<PathBuf>) -> Result<(AppConfig, Library), Box
     recreate(&AppConfig::default());
 
     let (config, library) = if config_path.exists() {
-        let config = match confy::load("shiromana-cli", "config") {
+        let config = match confy::load_path(&config_path) {
             Ok(v) => v,
             Err(e) => {
                 panic!(
@@ -136,7 +138,15 @@ fn load_config(config_path: Option<PathBuf>) -> Result<(AppConfig, Library), Box
                 }
             },
         };
-        confy::store("shiromana-cli", "config", &config).unwrap();
+        let config_dir = config_path.parent();
+        if config_dir.is_none() {
+            panic!("Config file's directory cannot be resolved. Why?");
+        } else {
+            if !config_dir.unwrap().exists() {
+                std::fs::create_dir_all(config_dir.unwrap())?;
+            }
+        }
+        confy::store_path(config_path, &config).unwrap();
         let library = match create_library(&config) {
             Ok(v) => v,
             Err(e) => panic!(
@@ -154,6 +164,7 @@ fn load_config(config_path: Option<PathBuf>) -> Result<(AppConfig, Library), Box
 use clap::{App, ArgGroup, Clap, ValueHint};
 use shiromana_rs::media::{Media, MediaType};
 use shiromana_rs::misc::Uuid;
+use std::process::exit;
 
 #[derive(Clap)]
 #[clap(version = "0.1.0", author = "Shiroko <hhx.xxm@gmail.com>")]
@@ -203,13 +214,33 @@ pub struct Add {
     sorted: bool,
 }
 
+pub enum CreateType {
+    Series,
+    Tag,
+}
+
 #[derive(Clap)]
 pub struct Create {
+    _type: CreateType,
     title: String,
     #[clap(short, long)]
     comment: Option<String>,
     #[clap(short, long)]
     uuid_only: bool,
+}
+
+impl FromStr for CreateType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "series" => Ok(Self::Series),
+            "tag" => Ok(Self::Tag),
+            "s" => Ok(Self::Series),
+            "t" => Ok(Self::Tag),
+            _ => Err(format!("{} cannot be parsed into type annotation.", s)),
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
