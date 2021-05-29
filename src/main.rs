@@ -182,6 +182,7 @@ enum SubCommand {
     Add(Add),
     Create(Create),
     Clean,
+    Test,
 }
 
 #[derive(Clap)]
@@ -202,8 +203,8 @@ pub struct Add {
     title: Option<String>,
     #[clap(short = 'k', long, validator(is_valid_media_type))]
     _type: Option<MediaType>,
-    #[clap(name = "FILE", parse(from_os_str), value_hint = ValueHint::FilePath, validator(is_existed_as_file), group = "input")]
-    file: Vec<PathBuf>,
+    #[clap(name = "FILE or URL", value_hint = ValueHint::FilePath, value_hint = ValueHint::Url, group = "input")]
+    file: Vec<String>,
     #[clap(short, long, name = "INPUT", parse(from_os_str), value_hint = ValueHint::FilePath, validator(is_existed_as_file), group = "input")]
     input: Option<PathBuf>,
     #[clap(short, long, group = "series_g")]
@@ -244,12 +245,28 @@ impl FromStr for CreateType {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let (exit_sig_tx, exit_sig_rx) = channel();
+
+    ctrlc::set_handler(move || {
+        println!("User Input Interrupt.");
+        exit_sig_tx.send(()).expect("Error while send exit signal.");
+    })
+    .expect("Cannot Set Ctrl-C Interrupt handler.");
+
+    let check_exit = move || -> bool {
+        if exit_sig_rx.try_recv().is_err() {
+            false
+        } else {
+            true
+        }
+    };
+
     let opts: Opts = Opts::parse();
     let config_path = opts.config.map(|v| PathBuf::from(v));
     let (cfg, mut lib) = load_config(config_path)?;
     match opts.subcmd {
         SubCommand::Info(opt) => do_info(opt, cfg, lib),
-        SubCommand::Add(opt) => do_add(opt, cfg, &mut lib),
+        SubCommand::Add(opt) => do_add(opt, cfg, &mut lib, check_exit),
         SubCommand::Create(opt) => do_create(opt, cfg, &mut lib),
         SubCommand::Clean => {
             #[cfg(debug_assertions)]
@@ -258,6 +275,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 purge_library(&cfg);
                 recreate(&cfg);
             }
+            Ok(())
+        }
+        SubCommand::Test => {
+            println!("Test start.");
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            println!("Test done.");
             Ok(())
         }
     }

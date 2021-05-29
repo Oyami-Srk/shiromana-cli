@@ -23,6 +23,10 @@ lazy_static! {
     static ref STYLE_ERROR: Style = Style::new().red().bright();
 }
 
+fn is_url(s: &str) -> bool {
+    &s[0..7] == "http://" || &s[0..8] == "https://"
+}
+
 fn print_media(media: &Media, detailed: bool) {
     if detailed {
         println!(
@@ -267,12 +271,16 @@ pub fn do_info(opt: Info, _cfg: AppConfig, lib: Library) -> Result<(), Box<dyn E
 
 fn add_one_media(
     lib: &mut Library,
-    file: PathBuf,
+    file: String,
     kind: Option<MediaType>,
     title: Option<String>,
     comment: Option<String>,
 ) -> Result<u64, LibError> {
     let kind = kind.clone().unwrap_or_else(|| {
+        if is_url(&file) {
+            return MediaType::URL;
+        }
+        let file = PathBuf::from(&file);
         let mime_str = tree_magic::from_filepath(file.as_path());
         let mime_str = mime_str.split("/").collect::<Vec<&str>>();
         let mime_str = mime_str.first().unwrap();
@@ -284,23 +292,20 @@ fn add_one_media(
             _ => MediaType::Other,
         }
     });
-    let id = lib.add_media(
-        file.to_str().unwrap().to_string(),
-        kind.clone(),
-        None,
-        None,
-        title,
-        comment,
-    )?;
+    let id = lib.add_media(file.clone(), kind.clone(), None, None, title, comment)?;
     println!(
         "{}: {} {}{}{} {}{}{}",
         STYLE_FIELD_NAME.apply_to("Successfully Added Media"),
-        STYLE_FIELD_VALUE.apply_to(
+        STYLE_FIELD_VALUE.apply_to(if is_url(&file) {
+            file
+        } else {
+            let file = PathBuf::from(&file);
             file.file_name()
                 .unwrap_or_default()
                 .to_str()
                 .unwrap_or_default()
-        ),
+                .to_string()
+        }),
         *DECO_LEFT_PAR_M,
         STYLE_FIELD_VALUE.apply_to(id),
         *DECO_RIGHT_PAR_M,
@@ -311,28 +316,35 @@ fn add_one_media(
     Ok(id)
 }
 
-fn parse_input_file(input: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+fn parse_input_file(input: &PathBuf) -> Result<Vec<String>, Box<dyn Error>> {
     let lines = std::fs::read_to_string(input)?;
     let lines = lines.lines();
     let lines = lines.map(|v| {
         if &v[0..7] == "file://" {
             Url::parse(v).unwrap().path().to_string()
+        } else if is_url(v) {
+            v.to_string()
         } else {
             v.to_string()
         }
     });
     let not_exists: Vec<String> = lines
         .clone()
-        .filter(|v| !PathBuf::from(v).is_file())
+        .filter(|v| !is_url(v) && !PathBuf::from(v).is_file())
         .collect();
     if !not_exists.is_empty() {
-        Err({ not_exists.join(",") + " are not existed or not a file." }.into())
+        Err({ not_exists.join(",") + " are not existed or not a file or url." }.into())
     } else {
-        Ok(lines.map(|v| PathBuf::from(v)).collect())
+        Ok(lines.collect())
     }
 }
 
-pub fn do_add(opt: Add, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dyn Error>> {
+pub fn do_add<F: Fn() -> bool>(
+    opt: Add,
+    _cfg: AppConfig,
+    lib: &mut Library,
+    exit_checker: F,
+) -> Result<(), Box<dyn Error>> {
     let try_remove = |f: &PathBuf| match std::fs::remove_file(f) {
         Err(e) => println!(
             "{}: {}",
@@ -394,69 +406,72 @@ pub fn do_add(opt: Add, _cfg: AppConfig, lib: &mut Library) -> Result<(), Box<dy
         None
     };
 
-    let ids: Vec<Option<u64>> = files
-        .iter()
-        .map(|f| {
-            match add_one_media(
-                lib,
-                f.clone(),
-                opt._type.clone(),
-                title.clone(),
-                comment.clone(),
-            ) {
-                Err(e) => {
-                    if let LibError::AlreadyExists(s) = e {
-                        let id = lib
-                            .query_media(&format!("hash = '{}'", s))
-                            .unwrap_or_else(|v| {
-                                println!(
-                                    "{}: {}, {}: {}",
-                                    STYLE_ERROR
-                                        .apply_to("Error at querying media via Hash should exists"),
-                                    STYLE_FIELD_VALUE.apply_to(s),
-                                    STYLE_ERROR.apply_to("Due to"),
-                                    STYLE_FIELD_VALUE.apply_to(v.to_string())
-                                );
-                                vec![]
-                            })
-                            .first()
-                            .map(|v| *v);
-                        if let Some(id) = id {
-                            let m = lib.get_media(id).unwrap();
+    let mut ids: Vec<Option<u64>> = vec![];
+    for f in files.iter() {
+        let id = match add_one_media(
+            lib,
+            f.clone(),
+            opt._type.clone(),
+            title.clone(),
+            comment.clone(),
+        ) {
+            Err(e) => {
+                if let LibError::AlreadyExists(s) = e {
+                    let id = lib
+                        .query_media(&format!("hash = '{}'", s))
+                        .unwrap_or_else(|v| {
                             println!(
-                                "{}: {} {}{}{} {}{}{}",
-                                STYLE_FIELD_NAME.apply_to("Existed Media Found"),
-                                STYLE_FIELD_VALUE.apply_to(m.filename),
-                                *DECO_LEFT_PAR_M,
-                                STYLE_FIELD_VALUE.apply_to(id),
-                                *DECO_RIGHT_PAR_M,
-                                *DECO_LEFT_PAR_M,
-                                STYLE_FIELD_VALUE.apply_to(m.kind.to_string()),
-                                *DECO_RIGHT_PAR_M,
+                                "{}: {}, {}: {}",
+                                STYLE_ERROR
+                                    .apply_to("Error at querying media via Hash should exists"),
+                                STYLE_FIELD_VALUE.apply_to(s),
+                                STYLE_ERROR.apply_to("Due to"),
+                                STYLE_FIELD_VALUE.apply_to(v.to_string())
                             );
-                        }
-                        if opt._move {
-                            try_remove(f);
-                        }
-                        id
-                    } else {
+                            vec![]
+                        })
+                        .first()
+                        .map(|v| *v);
+                    if let Some(id) = id {
+                        let m = lib.get_media(id).unwrap();
                         println!(
-                            "{}: {}",
-                            STYLE_ERROR.apply_to("Error when trying add media"),
-                            STYLE_FIELD_VALUE.apply_to(e.to_string())
+                            "{}: {} {}{}{} {}{}{}",
+                            STYLE_FIELD_NAME.apply_to("Existed Media Found"),
+                            STYLE_FIELD_VALUE.apply_to(m.filename),
+                            *DECO_LEFT_PAR_M,
+                            STYLE_FIELD_VALUE.apply_to(id),
+                            *DECO_RIGHT_PAR_M,
+                            *DECO_LEFT_PAR_M,
+                            STYLE_FIELD_VALUE.apply_to(m.kind.to_string()),
+                            *DECO_RIGHT_PAR_M,
                         );
-                        None
                     }
-                }
-                Ok(id) => {
-                    if opt._move {
-                        try_remove(f);
+                    if opt._move && !is_url(&f) {
+                        try_remove(&PathBuf::from(&f));
                     }
-                    Some(id)
+                    id
+                } else {
+                    println!(
+                        "{}: {}",
+                        STYLE_ERROR.apply_to("Error when trying add media"),
+                        STYLE_FIELD_VALUE.apply_to(e.to_string())
+                    );
+                    None
                 }
             }
-        })
-        .collect();
+            Ok(id) => {
+                if opt._move {
+                    try_remove(&PathBuf::from(&f));
+                }
+                Some(id)
+            }
+        };
+        ids.push(id);
+        if exit_checker() {
+            return Ok(());
+        }
+    }
+
     if opt.sorted && ids.iter().any(|v| v.is_none()) {
         println!("{}", STYLE_FIELD_VALUE.apply_to("There is some media cannot be added while trying to add it to sorted series. This may break the sort."));
         return Ok(());
